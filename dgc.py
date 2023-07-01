@@ -13,6 +13,7 @@ class DGC_SGD(optim.SGD):
         self.momentum = momentum
         self.nesterov = nesterov
 
+    @torch.compile
     def step(self, closure=None):
         loss = None
         if closure is not None:
