@@ -1,6 +1,6 @@
 import torch
-import torch.distributed.rpc as rpc
 import torch.optim as optim
+from torch.distributed import broadcast
 
 
 class DGC_SGD(optim.SGD):
@@ -9,10 +9,9 @@ class DGC_SGD(optim.SGD):
         super(DGC_SGD, self).__init__(params, lr, momentum, dampening,
                                       weight_decay, nesterov)
         self.compress_ratio = compress_ratio
+        self.grads_accumulator = {}
         self.momentum = momentum
         self.nesterov = nesterov
-        self.grads_accumulator = {}
-        self.momentum_correction = {}
 
     def step(self, closure=None):
         loss = None
@@ -35,7 +34,7 @@ class DGC_SGD(optim.SGD):
                 if self.compress_ratio > 0:
                     self.compress_gradients(param)
 
-                # Update the parameters using SGD with momentum correction
+                # Update the parameters using SGD
                 if self.momentum != 0:
                     param_state = self.state[param]
                     if 'momentum_buffer' not in param_state:
@@ -84,15 +83,11 @@ class DGC_SGD(optim.SGD):
         grad_quantized = grad_rounded / grad.numel()
 
         # Broadcast the compressed gradients to all workers
-        rpc.rpc_sync('worker', self._update_gradients, args=(grad_quantized,))
+        broadcast(grad_quantized, src=0)
 
         # Update the gradients accumulator with compressed gradients
         self.grads_accumulator[param] = grad_quantized
 
         # Clear the accumulator if all workers have updated the gradients
-        if rpc.get_worker_info().id == 0:
+        if torch.distributed.get_rank() == 0:
             self.grads_accumulator[param] = torch.zeros_like(grad)
-
-    def _update_gradients(self, grad_quantized):
-        param = next(self.param_groups[0]['params'])
-        param.grad.data = grad_quantized
